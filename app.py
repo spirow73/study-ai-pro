@@ -639,13 +639,75 @@ elif mode == "Estadísticas":
     st.subheader("📈 Resumen Visual")
     st.bar_chart(chart_data.set_index('Resultado'))
     
+    # --- Obtener las preguntas para mostrar detalles ---
+    questions_res = supabase.table("questions").select("*").execute()
+    questions_dict = {q['id']: q for q in questions_res.data}
+    
+    # --- Preguntas Falladas (nueva sección) ---
+    st.subheader("❌ Preguntas Falladas")
+    
+    # Identificar preguntas falladas (que no se han acertado después)
+    failed_entries = [e for e in user_data if not e.get('is_correct')]
+    correct_ids = set([e['question_id'] for e in user_data if e.get('is_correct')])
+    
+    # Filtrar las que aún no se han acertado (o mostrar todas las que alguna vez se fallaron)
+    unique_failed_ids = set([e['question_id'] for e in failed_entries])
+    pending_review_ids = unique_failed_ids - correct_ids  # Las que nunca se acertaron
+    
+    if not unique_failed_ids:
+        st.success("🎉 ¡Excelente! No has fallado ninguna pregunta.")
+    else:
+        # Tabs: pendientes vs todas las falladas
+        tab_pending, tab_all = st.tabs(["📋 Pendientes de repasar", "📜 Todas las falladas"])
+        
+        with tab_pending:
+            if not pending_review_ids:
+                st.info("✅ Has acertado todas las preguntas que fallaste. ¡Buen trabajo!")
+            else:
+                st.caption(f"{len(pending_review_ids)} preguntas que aún no has acertado")
+                for q_id in pending_review_ids:
+                    question = questions_dict.get(q_id)
+                    if question:
+                        failed_entry = next((e for e in reversed(failed_entries) if e['question_id'] == q_id), None)
+                        with st.expander(f"❌ {question['question'][:80]}..." if len(question['question']) > 80 else f"❌ {question['question']}"):
+                            st.markdown(f"**📝 Pregunta:** {question['question']}")
+                            st.markdown(f"**📚 Tema:** {question.get('topic', 'General')}")
+                            st.markdown(f"**🏷️ Tipo:** {question.get('type', 'N/A').upper()}")
+                            if failed_entry:
+                                st.markdown(f"**❌ Tu respuesta:** {failed_entry.get('user_answer', 'N/A')}")
+                            st.markdown(f"**✅ Respuesta correcta:** {question['answer']}")
+        
+        with tab_all:
+            st.caption(f"{len(unique_failed_ids)} preguntas falladas en total (incluyendo las ya acertadas)")
+            for q_id in unique_failed_ids:
+                question = questions_dict.get(q_id)
+                if question:
+                    acertada_despues = q_id in correct_ids
+                    icon = "✅" if acertada_despues else "❌"
+                    status = " (ya acertada)" if acertada_despues else " (pendiente)"
+                    
+                    failed_entry = next((e for e in reversed(failed_entries) if e['question_id'] == q_id), None)
+                    with st.expander(f"{icon} {question['question'][:80]}...{status}" if len(question['question']) > 80 else f"{icon} {question['question']}{status}"):
+                        st.markdown(f"**📝 Pregunta:** {question['question']}")
+                        st.markdown(f"**📚 Tema:** {question.get('topic', 'General')}")
+                        st.markdown(f"**🏷️ Tipo:** {question.get('type', 'N/A').upper()}")
+                        if failed_entry:
+                            st.markdown(f"**❌ Tu respuesta:** {failed_entry.get('user_answer', 'N/A')}")
+                        st.markdown(f"**✅ Respuesta correcta:** {question['answer']}")
+    
+    st.markdown("---")
+    
     # --- Historial reciente ---
     st.subheader("🕐 Historial Reciente")
     recent = user_data[-10:]  # Últimas 10
     for entry in reversed(recent):
         icon = "✅" if entry.get('is_correct') else "❌"
         q_id = entry.get('question_id', '?')
-        st.write(f"{icon} Pregunta ID: {q_id}")
+        question = questions_dict.get(q_id)
+        if question:
+            st.write(f"{icon} {question['question'][:60]}..." if len(question['question']) > 60 else f"{icon} {question['question']}")
+        else:
+            st.write(f"{icon} Pregunta ID: {q_id}")
     
     # --- Botón para limpiar historial ---
     st.markdown("---")

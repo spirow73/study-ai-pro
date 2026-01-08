@@ -266,18 +266,120 @@ elif mode == "Estudiar":
     topics = list(set([q.get('topic', 'General') for q in all_questions]))
     topics.insert(0, "Todos los temas")
     
-    # --- Modo de estudio ---
-    st.markdown("### 🎯 Modo de estudio")
-    study_mode = st.radio(
-        "Selecciona cómo quieres estudiar:",
-        ["📚 Todas las preguntas", "❌ Solo las que fallé"],
-        horizontal=True,
-        label_visibility="collapsed"
-    )
-    only_failed = (study_mode == "❌ Solo las que fallé")
+    # --- Configuración de estudio ---
+    col_config1, col_config2 = st.columns(2)
     
-    # --- Selector de tema ---
-    selected_topic = st.selectbox("📖 Filtrar por tema:", topics)
+    with col_config1:
+        st.markdown("##### 📖 Tema")
+        selected_topic = st.selectbox("Tema:", topics, label_visibility="collapsed")
+    
+    with col_config2:
+        st.markdown("##### 🎯 Tipo de pregunta")
+        question_type = st.selectbox(
+            "Tipo:",
+            ["📚 Todas", "🃏 Flashcards", "✅ Quiz", "✍️ Desarrollo"],
+            label_visibility="collapsed"
+        )
+    
+    # Mapeo de tipos
+    type_map = {
+        "📚 Todas": None,
+        "🃏 Flashcards": "flashcard",
+        "✅ Quiz": "quiz",
+        "✍️ Desarrollo": "essay"
+    }
+    selected_type = type_map[question_type]
+    
+    # --- Modo de repaso y botón de generar ---
+    only_failed = st.toggle("❌ Solo preguntas falladas", help="Muestra solo las que has fallado anteriormente")
+    
+    if selected_topic != "Todos los temas":
+        st.write("") # Espacio
+    if selected_topic != "Todos los temas":
+        st.write("") # Espacio
+        
+        @st.dialog("✨ Generar Preguntas con IA")
+        def generate_dialog(topic_name):
+            st.write(f"Configura qué tipo de preguntas quieres para **{topic_name}**.")
+            
+            col_n1, col_n2, col_n3 = st.columns(3)
+            num_flash = col_n1.number_input("🃏 Flashcards", min_value=0, max_value=20, value=3)
+            num_quiz = col_n2.number_input("✅ Quiz", min_value=0, max_value=20, value=2)
+            num_essay = col_n3.number_input("✍️ Desarrollo", min_value=0, max_value=20, value=0)
+            
+            total = num_flash + num_quiz + num_essay
+            
+            st.info(f"Total a generar: **{total}** preguntas")
+            
+            if st.button("🚀 Generar", type="primary", use_container_width=True, disabled=(total == 0)):
+                # Lógica de generación dentro del diálogo
+                with st.spinner(f"🧠 Creando {total} preguntas nuevas..."):
+                    existing_qs = [q['question'] for q in all_questions if q.get('topic') == selected_topic][:5]
+                    
+                    if GEMINI_API_KEY:
+                        client = genai.Client(api_key=GEMINI_API_KEY)
+                        
+                        # Prompt específico solicitando cantidades exactas
+                        prompt = f"""
+                        Tema: {selected_topic}
+                        Preguntas existentes (contexto): {chr(10).join(existing_qs)}
+                        
+                        Genera EXACTAMENTE {total} preguntas NUEVAS y DIFERENTES distribuidas así:
+                        - {num_flash} tipo 'flashcard' (pregunta/respuesta breve)
+                        - {num_quiz} tipo 'quiz' (pregunta tipo test con 4 opciones y respuesta correcta)
+                        - {num_essay} tipo 'essay' (pregunta de desarrollo/abierta)
+                        
+                        Formato JSON estricto:
+                        [
+                          {{"type": "flashcard", "question": "...", "answer": "..."}},
+                          {{"type": "quiz", "question": "...", "options": ["A", "B", "C", "D"], "answer": "Opción Correcta"}},
+                          {{"type": "essay", "question": "...", "answer": "Explicación esperada..."}}
+                        ]
+                        """
+                        
+                        # Lógica de reintento (modelos)
+                        models_to_try = ['gemini-2.0-flash-lite', 'gemini-2.5-flash', 'gemini-flash-latest']
+                        new_questions = []
+                        success_model = None
+                        
+                        for model_name in models_to_try:
+                            try:
+                                response = client.models.generate_content(
+                                    model=model_name,
+                                    contents=prompt,
+                                    config=types.GenerateContentConfig(response_mime_type="application/json")
+                                )
+                                new_questions = json.loads(response.text)
+                                success_model = model_name
+                                break 
+                            except Exception as e:
+                                error_msg = str(e)
+                                if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
+                                    st.toast(f"⏳ Esperando cuota ({model_name})...", icon="⚠️")
+                                    time.sleep(4)
+                                    try:
+                                        response = client.models.generate_content(
+                                            model=model_name,
+                                            contents=prompt,
+                                            config=types.GenerateContentConfig(response_mime_type="application/json")
+                                        )
+                                        new_questions = json.loads(response.text)
+                                        success_model = model_name
+                                        break
+                                    except:
+                                        pass
+                                continue
+
+                        if new_questions:
+                            save_to_db(new_questions, selected_topic)
+                            st.success(f"¡Listo! Se crearon {len(new_questions)} preguntas.")
+                            time.sleep(1)
+                            st.rerun()
+                        else:
+                            st.error("Error al generar. Inténtalo de nuevo.")
+
+        if st.button(f"✨ Generar más preguntas con IA", type="primary", use_container_width=True):
+            generate_dialog(selected_topic)
     
     st.markdown("---")
     
@@ -286,6 +388,10 @@ elif mode == "Estudiar":
         db_questions = all_questions
     else:
         db_questions = [q for q in all_questions if q.get('topic') == selected_topic]
+    
+    # Filtrar por tipo
+    if selected_type:
+        db_questions = [q for q in db_questions if q.get('type') == selected_type]
         
     # --- Filtrar por falladas si se activa el modo repaso ---
     if only_failed:
@@ -303,11 +409,10 @@ elif mode == "Estudiar":
         if only_failed:
             st.success("🎉 ¡Genial! No tienes preguntas falladas pendientes.")
         else:
-            st.info(f"No hay preguntas para el tema '{selected_topic}'.")
+            st.info(f"No hay preguntas con estos filtros.")
         st.stop()
     
     st.caption(f"📊 {len(db_questions)} preguntas disponibles")
-    st.markdown("---")
     
     # --- Inicializar índice desde query params o session state ---
     # Usar query_params para persistencia en URL
